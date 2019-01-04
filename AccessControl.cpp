@@ -12,6 +12,7 @@ static const char *kPermissionList = "list";
 
 struct audit_data {
     const char* interfaceName;
+    const char* sid;
     pid_t       pid;
 };
 
@@ -34,7 +35,7 @@ AccessControl::AccessControl() {
     selinux_set_callback(SELINUX_CB_LOG, mSeCallbacks);
 }
 
-bool AccessControl::canAdd(const std::string& fqName, pid_t pid) {
+bool AccessControl::canAdd(const std::string& fqName, const CallingContext& callingContext) {
     FQName fqIface(fqName);
 
     if (!fqIface.isValid()) {
@@ -42,10 +43,10 @@ bool AccessControl::canAdd(const std::string& fqName, pid_t pid) {
     }
     const std::string checkName = fqIface.package() + "::" + fqIface.name();
 
-    return checkPermission(pid, kPermissionAdd, checkName.c_str());
+    return checkPermission(callingContext, kPermissionAdd, checkName.c_str());
 }
 
-bool AccessControl::canGet(const std::string& fqName, pid_t pid) {
+bool AccessControl::canGet(const std::string& fqName, const CallingContext& callingContext) {
     FQName fqIface(fqName);
 
     if (!fqIface.isValid()) {
@@ -53,37 +54,46 @@ bool AccessControl::canGet(const std::string& fqName, pid_t pid) {
     }
     const std::string checkName = fqIface.package() + "::" + fqIface.name();
 
-    return checkPermission(pid, kPermissionGet, checkName.c_str());
+    return checkPermission(callingContext, kPermissionGet, checkName.c_str());
 }
 
-bool AccessControl::canList(pid_t pid) {
-    return checkPermission(pid, mSeContext, kPermissionList, nullptr);
+bool AccessControl::canList(const CallingContext& callingContext) {
+    return checkPermission(callingContext, mSeContext, kPermissionList, nullptr);
 }
 
-bool AccessControl::checkPermission(pid_t sourcePid, const char *targetContext,
-                                    const char *perm, const char *interface) {
-    char *sourceContext = NULL;
-    bool allowed = false;
-    struct audit_data ad;
+AccessControl::CallingContext AccessControl::getCallingContext(pid_t sourcePid) {
+    char *sourceContext = nullptr;
 
     if (getpidcon(sourcePid, &sourceContext) < 0) {
-        ALOGE("SELinux: failed to retrieved process context for pid %d", sourcePid);
+        ALOGE("SELinux: failed to retrieve process context for pid %d", sourcePid);
+        return { false, "", sourcePid };
+    }
+
+    std::string context = sourceContext;
+    freecon(sourceContext);
+    return { true, context, sourcePid };
+}
+
+bool AccessControl::checkPermission(const CallingContext& source, const char *targetContext, const char *perm, const char *interface) {
+    if (!source.sidPresent) {
         return false;
     }
 
-    ad.pid = sourcePid;
+    bool allowed = false;
+
+    struct audit_data ad;
+    ad.pid = source.pid;
+    ad.sid = source.sid.c_str();
     ad.interfaceName = interface;
 
-    allowed = (selinux_check_access(sourceContext, targetContext, "hwservice_manager",
+    allowed = (selinux_check_access(source.sid.c_str(), targetContext, "hwservice_manager",
                                     perm, (void *) &ad) == 0);
-
-    freecon(sourceContext);
 
     return allowed;
 }
 
-bool AccessControl::checkPermission(pid_t sourcePid, const char *perm, const char *interface) {
-    char *targetContext = NULL;
+bool AccessControl::checkPermission(const CallingContext& source, const char *perm, const char *interface) {
+    char *targetContext = nullptr;
     bool allowed = false;
 
     // Lookup service in hwservice_contexts
@@ -92,7 +102,7 @@ bool AccessControl::checkPermission(pid_t sourcePid, const char *perm, const cha
         return false;
     }
 
-    allowed = checkPermission(sourcePid, targetContext, perm, interface);
+    allowed = checkPermission(source, targetContext, perm, interface);
 
     freecon(targetContext);
 
@@ -107,7 +117,9 @@ int AccessControl::auditCallback(void *data, security_class_t /*cls*/, char *buf
         return 0;
     }
 
-    snprintf(buf, len, "interface=%s pid=%d", ad->interfaceName, ad->pid);
+    const char* sid = ad->sid ? ad->sid : "N/A";
+    
+    snprintf(buf, len, "interface=%s sid=%s pid=%d", ad->interfaceName, sid, ad->pid);
     return 0;
 }
 

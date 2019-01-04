@@ -33,6 +33,7 @@ using android::hardware::IPCThreadState;
 using android::hardware::configureRpcThreadpool;
 using android::hardware::hidl_string;
 using android::hardware::hidl_vec;
+using android::hardware::setRequestingSid;
 
 // hidl types
 using android::hidl::manager::V1_0::BnHwServiceManager;
@@ -59,7 +60,8 @@ public:
 int main() {
     configureRpcThreadpool(1, true /* callerWillJoin */);
 
-    ServiceManager *manager = new ServiceManager();
+    sp<ServiceManager> manager = new ServiceManager();
+    setRequestingSid(manager, true);
 
     if (!manager->add(serviceName, manager)) {
         ALOGE("Failed to register hwservicemanager with itself.");
